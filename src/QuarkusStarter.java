@@ -138,9 +138,35 @@ class QuarkusStarter implements Callable<Integer> {
 
         new ZipFile(tmpFile).extractAll(targetDir.toString());
 
-        System.err.println(ansi().render("@|green " + "Project created in folder '" + targetDir.resolve(gav.artifactId) + "'." + "|@\n"));
+        System.err.println("------------------------------------------------------------------------");
+        System.err.println(ansi().render("@|green " + "Succesfully created a project with artifact-id '" + gav.artifactId + "' at '" + targetDir.resolve(gav.artifactId) + "'." + "|@"));
+        System.err.println(ansi().render("Build & run with '" + buildCommand() + "'"));
+        System.err.println("------------------------------------------------------------------------");
 
         return 0;
+    }
+
+    String buildCommand() {
+        if (buildTool.equals(BuildTool.maven)) {
+            if (isUnix()) {
+                return "./mvnw quarkus:dev";
+            }
+            else {
+                return "mvnw.cmd quarkus:dev";
+            }
+        }
+        else {
+            if (isUnix()) {
+                return "./gradlew quarkusDev";
+            }
+            else {
+                return "gradlew.bat quarkusDev";
+            }
+        }
+    }
+
+    static boolean isUnix() {
+        return !System.getProperty("os.name").toLowerCase(Locale.ENGLISH).contains("windows");
     }
 
     static void download(URL url, File projectZipFile) {
