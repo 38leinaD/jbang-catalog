@@ -1,8 +1,8 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 //DEPS info.picocli:picocli:4.5.0
-//DEPS org.glassfish.jersey.core:jersey-client:2.26
-//DEPS org.glassfish.jersey.inject:jersey-hk2:2.26
-//DEPS org.glassfish.jersey.media:jersey-media-json-processing:2.26
+//DEPS org.jboss.resteasy:resteasy-client:4.5.6.Final
+//DEPS org.jboss.resteasy:resteasy-json-p-provider:4.5.6.Final
+//DEPS net.lingala.zip4j:zip4j:2.6.4
 //DEPS de.codeshelf.consoleui:consoleui:0.0.13
 
 import de.codeshelf.consoleui.prompt.CheckboxPrompt;
@@ -11,6 +11,8 @@ import de.codeshelf.consoleui.prompt.ConsolePrompt;
 import de.codeshelf.consoleui.prompt.PromtResultItemIF;
 import de.codeshelf.consoleui.prompt.builder.CheckboxPromptBuilder;
 import de.codeshelf.consoleui.prompt.builder.PromptBuilder;
+import net.lingala.zip4j.ZipFile;
+import org.apache.commons.codec.binary.Hex;
 import org.fusesource.jansi.Ansi;
 import org.fusesource.jansi.AnsiConsole;
 import picocli.CommandLine;
@@ -72,7 +74,7 @@ class QuarkusStarter implements Callable<Integer> {
 
         Path targetDir = Paths.get(System.getProperty("user.dir"));
         if (targetDir.resolve(gav.artifactId).toFile().exists()) {
-            System.err.println(ansi().render("@|red " + "Folder '" + targetDir + "' already exists." + "|@\n"));
+            System.err.println(ansi().render("@|red " + "Folder '" + targetDir.resolve(gav.artifactId) + "' already exists." + "|@\n"));
             System.exit(1);
         }
 
@@ -133,7 +135,8 @@ class QuarkusStarter implements Callable<Integer> {
 
         File tmpFile = Files.createTempFile("", ".zip").toFile();
         download(new URL(projectUrl), tmpFile);
-        unzip(tmpFile, targetDir.toFile());
+
+        new ZipFile(tmpFile).extractAll(targetDir.toString());
 
         System.err.println(ansi().render("@|green " + "Project created in folder '" + targetDir.resolve(gav.artifactId) + "'." + "|@\n"));
 
@@ -163,56 +166,6 @@ class QuarkusStarter implements Callable<Integer> {
                 ((HttpURLConnection) conn).disconnect();
             }
         }
-    }
-
-    static void unzip(File zipFile, File targetDir) {
-        byte[] buffer = new byte[1024];
-        ZipInputStream zis = null;
-        try {
-            zis = new ZipInputStream(new FileInputStream(zipFile));
-            ZipEntry zipEntry = zis.getNextEntry();
-            while (zipEntry != null) {
-                File newFile = newFile(targetDir, zipEntry);
-                if (zipEntry.isDirectory()) {
-                    if (!newFile.isDirectory() && !newFile.mkdirs()) {
-                        throw new IOException("Failed to create directory " + newFile);
-                    }
-                } else {
-                    // fix for Windows-created archives
-                    File parent = newFile.getParentFile();
-                    if (!parent.isDirectory() && !parent.mkdirs()) {
-                        throw new IOException("Failed to create directory " + parent);
-                    }
-
-                    // write file content
-                    FileOutputStream fos = new FileOutputStream(newFile);
-                    int len;
-                    while ((len = zis.read(buffer)) > 0) {
-                        fos.write(buffer, 0, len);
-                    }
-                    fos.close();
-                }
-                zipEntry = zis.getNextEntry();
-            }
-            zis.closeEntry();
-            zis.close();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-
-    }
-
-    static File newFile(File destinationDir, ZipEntry zipEntry) throws IOException {
-        File destFile = new File(destinationDir, zipEntry.getName());
-
-        String destDirPath = destinationDir.getCanonicalPath();
-        String destFilePath = destFile.getCanonicalPath();
-
-        if (!destFilePath.startsWith(destDirPath + File.separator)) {
-            throw new IOException("Entry is outside of the target dir: " + zipEntry.getName());
-        }
-
-        return destFile;
     }
 
     static Optional<Extension> findExtensionByName(List<Extension> extensions, String name) {
