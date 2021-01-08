@@ -1,0 +1,9 @@
+{
+  "catalogs": {},
+  "aliases": {
+    "quarkus-starter": {
+      "script-ref": "src/QuarkusStarter.java",
+      "description": "Script to scaffold a Quarkus project"
+    }
+  }
+}
