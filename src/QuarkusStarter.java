@@ -216,7 +216,7 @@ class QuarkusStarter {
 
         static Optional<Extension> findExtensionByName(List<Extension> extensions, String name) {
             return extensions.stream()
-                    .filter(ext -> ext.name.equals(name) || ext.id.equals(name) || ext.id.equals("io.quarkus:quarkus-" + name))
+                    .filter(ext -> ext.name.equals(name) || ext.id.equals(name) || ext.id.equals("io.quarkus:" + name) || ext.id.equals("io.quarkus:quarkus-" + name))
                     .findFirst();
         }
 
