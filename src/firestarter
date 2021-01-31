@@ -1,0 +1,241 @@
+///usr/bin/env jbang "$0" "$@" ; exit $?
+//DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
+//DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
+//DEPS io.quarkus:quarkus-picocli:1.11.0.Final
+//DEPS io.quarkus:quarkus-arc:1.11.0.Final
+//DEPS io.quarkus:quarkus-resteasy-qute:1.11.0.Final
+//DEPS org.jboss.resteasy:resteasy-multipart-provider:4.6.0.Final
+//DEPS org.seleniumhq.selenium:selenium-chrome-driver:3.141.59
+//DEPS io.github.bonigarcia:webdrivermanager:4.3.1
+//DEPS org.fusesource.jansi:jansi:2.2.0
+
+//FILES templates/edit.html=firestarter.html
+//Q:CONFIG quarkus.log.console.level=WARN
+//Q:CONFIG quarkus.banner.enabled=false
+
+package firestarter;
+
+import io.github.bonigarcia.wdm.WebDriverManager;
+import io.quarkus.qute.Template;
+import io.quarkus.qute.TemplateInstance;
+import io.quarkus.runtime.Quarkus;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.fusesource.jansi.Ansi;
+import org.jboss.resteasy.annotations.providers.multipart.MultipartForm;
+import org.openqa.selenium.PageLoadStrategy;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.chrome.ChromeOptions;
+import picocli.CommandLine;
+import static org.fusesource.jansi.Ansi.ansi;
+
+import javax.enterprise.context.ApplicationScoped;
+import javax.inject.Inject;
+import javax.ws.rs.*;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.Response;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URL;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Properties;
+import java.util.concurrent.TimeUnit;
+
+@CommandLine.Command
+public class firestarter implements Runnable {
+
+    @CommandLine.Option(names = {"--auto-webdriver"}, description = "Download and setup ChromeWebdriver", defaultValue = "false")
+    Boolean downloadWebdriver;
+
+    @Inject
+    BrowserManager browserManager;
+
+    @Inject
+    VideoStorage video;
+
+    @Inject
+    @ConfigProperty(name = "quarkus.http.port")
+    String port;
+
+    @Override
+    public void run() {
+        if (downloadWebdriver && isRasPi()) {
+            System.err.println("Cannot download the ChromeDriver on RaspberryPi.");
+            System.err.println("Install with: 'sudo apt-get install chromium-chromedriver'");
+            System.exit(0);
+        }
+
+        // Init ChromeWebdriver & Selenium
+        try {
+            browserManager.init(downloadWebdriver);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        browserManager.openUrl(youtubeFullscreenUrl(video.getVideo().url));
+
+        System.err.println(Ansi.ansi().render("@|green " + "Open http://localhost:" + port + "/firestarter to change the URL/video to open." + "|@\n"));
+
+        Quarkus.waitForExit();
+
+        browserManager.shutdown();
+    }
+
+    static boolean isRasPi() {
+        return System.getProperty("os.name").equals("Linux")
+                && System.getProperty("os.arch").equals("arm");
+    }
+
+    public static String youtubeFullscreenUrl(String url) {
+        if (url.toLowerCase().indexOf("youtube") != -1) {
+            try {
+                // Convert URL to embed-url that allows opening in fullscreen, with autoplay and without controls.
+                final String videoId = Arrays.asList(new URL(url).getQuery().split("&"))
+                        .stream()
+                        .map(parm -> parm.split("="))
+                        .filter(kv -> kv[0].equals("v"))
+                        .map(kv -> kv[1])
+                        .findFirst()
+                        .get();
+                return "https://www.youtube.com/embed/" + videoId + "?controls=0&autoplay=1";
+            } catch (Exception e) {
+                return url;
+            }
+        }
+        return url;
+    }
+
+    @ApplicationScoped
+    public static class VideoStorage {
+        @Inject
+        BrowserManager browserManager;
+
+        public Video getVideo() {
+            Video video = new Video();
+
+            var configFile = new File(System.getProperty("user.dir") + "/.firestarter");
+            if (configFile.exists()) {
+                var properties = new Properties();
+                try {
+                    properties.load(new FileReader(configFile));
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+
+                video.title = "YouTube Fire";
+                video.url = properties.getProperty("url");
+            } else {
+                video.title = "YouTube Fire";
+                video.url = "https://www.youtube.com/watch?v=L_LUpnjgPso";
+            }
+
+            return video;
+        }
+
+        public void setVideo(Video video) {
+            var configFile = new File(System.getProperty("user.dir") + "/.firestarter");
+            var properties = new Properties();
+            try {
+                properties.put("url", video.url);
+                properties.store(new FileWriter(configFile), "comment");
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+
+            browserManager.openUrl(firestarter.youtubeFullscreenUrl(video.url));
+        }
+    }
+
+    @Path("firestarter")
+    public static class AdminResource {
+
+        @Inject
+        Template edit;
+
+        @Inject
+        VideoStorage videoStorage;
+
+        public AdminResource() {}
+
+        @GET
+        @Consumes(MediaType.TEXT_HTML)
+        @Produces(MediaType.TEXT_HTML)
+        public TemplateInstance view() {
+            return edit.data("video", videoStorage.getVideo());
+        }
+
+        @POST
+        @Consumes(MediaType.MULTIPART_FORM_DATA)
+        public Object update(
+                @MultipartForm Video video) {
+            System.out.println("SET");
+            videoStorage.setVideo(video);
+            return Response.status(301)
+                    .location(URI.create("/firestarter"))
+                    .build();
+        }
+    }
+
+    public static class Video {
+        public @FormParam("title") String title;
+        public @FormParam("url") String url;
+    }
+
+    @ApplicationScoped
+    public static class BrowserManager {
+
+        private Video video;
+        private WebDriver driver;
+
+        public static WebDriver setupDriver(boolean downloadWebdriver) {
+            if (downloadWebdriver) {
+                WebDriverManager.chromedriver().setup();
+            }
+            ChromeOptions options = new ChromeOptions();
+            options.addArguments("--kiosk");
+            options.setExperimentalOption("excludeSwitches", Collections.singletonList("enable-automation"));
+            options.setExperimentalOption("useAutomationExtension", false);
+
+            options.setPageLoadStrategy(PageLoadStrategy.NONE);
+            WebDriver driver = null;
+            try {
+                driver = new ChromeDriver(options);
+            }
+            catch (IllegalStateException e) {
+                if (!downloadWebdriver && e.getMessage().contains("The path to the driver executable must be set by the webdriver.chrome.driver system property")) {
+                    System.err.println("ChromeWebdriver is not installed.");
+                    if (firestarter.isRasPi()) {
+                        System.err.println("Install with: 'sudo apt-get install chromium-chromedriver'");
+                    }
+                    else {
+                        System.err.println("Run with '--auto-webdriver'");
+                    }
+                    System.exit(0);
+                }
+                else {
+                    throw e;
+                }
+            }
+            driver.manage().timeouts().implicitlyWait(1250, TimeUnit.MILLISECONDS);
+            return driver;
+        }
+
+
+
+        public void init(boolean downloadWebdriver) throws Exception {
+            driver = setupDriver(downloadWebdriver);
+        }
+
+        public void openUrl(String url) {
+            driver.get(url);
+        }
+
+        public void shutdown() {
+            driver.quit();
+        }
+    }
+}
