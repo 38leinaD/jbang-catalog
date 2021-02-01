@@ -1,5 +1,5 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
-//JAVA 13+
+//JAVA 11+
 //DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
 //DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
 //DEPS io.quarkus:quarkus-picocli:1.11.0.Final
