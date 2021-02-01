@@ -1,4 +1,5 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
+//JAVA 13+
 //DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
 //DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
 //DEPS io.quarkus:quarkus-picocli:1.11.0.Final
@@ -12,8 +13,6 @@
 //FILES templates/edit.html=firestarter.html
 //Q:CONFIG quarkus.log.console.level=WARN
 //Q:CONFIG quarkus.banner.enabled=false
-
-package firestarter;
 
 import io.github.bonigarcia.wdm.WebDriverManager;
 import io.quarkus.qute.Template;
@@ -48,8 +47,11 @@ import java.util.concurrent.TimeUnit;
 @CommandLine.Command
 public class firestarter implements Runnable {
 
-    @CommandLine.Option(names = {"--auto-webdriver"}, description = "Download and setup ChromeWebdriver", defaultValue = "false")
+    @CommandLine.Option(names = {"--setup-webdriver"}, description = "Download and setup ChromeWebdriver", defaultValue = "false")
     Boolean downloadWebdriver;
+
+    @CommandLine.Parameters(arity = "0")
+    String initialUrl;
 
     @Inject
     BrowserManager browserManager;
@@ -76,7 +78,7 @@ public class firestarter implements Runnable {
             throw new RuntimeException(e);
         }
 
-        browserManager.openUrl(youtubeFullscreenUrl(video.getVideo().url));
+        browserManager.openUrl(youtubeFullscreenUrl(video.getVideoWithInitial(initialUrl).url));
 
         System.err.println(Ansi.ansi().render("@|green " + "Open http://localhost:" + port + "/firestarter to change the URL/video to open." + "|@\n"));
 
@@ -115,6 +117,10 @@ public class firestarter implements Runnable {
         BrowserManager browserManager;
 
         public Video getVideo() {
+            return getVideoWithInitial(null);
+        }
+
+        public Video getVideoWithInitial(String initialVideo) {
             Video video = new Video();
 
             var configFile = new File(System.getProperty("user.dir") + "/.firestarter");
@@ -128,7 +134,11 @@ public class firestarter implements Runnable {
 
                 video.title = "YouTube Fire";
                 video.url = properties.getProperty("url");
-            } else {
+            } else if (initialVideo != null) {
+                video.title = "YouTube Fire";
+                video.url = initialVideo;
+            }
+            else {
                 video.title = "YouTube Fire";
                 video.url = "https://www.youtube.com/watch?v=L_LUpnjgPso";
             }
@@ -212,7 +222,7 @@ public class firestarter implements Runnable {
                         System.err.println("Install with: 'sudo apt-get install chromium-chromedriver'");
                     }
                     else {
-                        System.err.println("Run with '--auto-webdriver'");
+                        System.err.println("Run with '--setup-webdriver'");
                     }
                     System.exit(0);
                 }
