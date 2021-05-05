@@ -8,6 +8,10 @@
     "firestarter": {
       "script-ref": "src/firestarter",
       "description": "Display a YouTube video on your RasPi or similar (e.g. to build a 'virtual fireplace'). Also, simple web-ui to edit the video URL."
+    },
+    "httpserver": {
+      "script-ref": "src/httpserver.java",
+      "description": "Minimalist JDK-internal http-server"
     }
   }
 }
