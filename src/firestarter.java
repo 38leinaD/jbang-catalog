@@ -1,38 +1,18 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
-//JAVA 11+
-//DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
-//DEPS io.quarkus:quarkus-resteasy:1.11.0.Final
-//DEPS io.quarkus:quarkus-picocli:1.11.0.Final
-//DEPS io.quarkus:quarkus-arc:1.11.0.Final
-//DEPS io.quarkus:quarkus-resteasy-qute:1.11.0.Final
-//DEPS org.jboss.resteasy:resteasy-multipart-provider:4.6.0.Final
-//DEPS org.seleniumhq.selenium:selenium-chrome-driver:3.141.59
-//DEPS io.github.bonigarcia:webdrivermanager:4.3.1
-//DEPS org.fusesource.jansi:jansi:2.2.0
+//JAVA 21
+//DEPS io.quarkus:quarkus-resteasy:3.17.5
+//DEPS io.quarkus:quarkus-picocli:3.17.5
+//DEPS io.quarkus:quarkus-arc:3.17.5
+//DEPS io.quarkus:quarkus-resteasy-qute:3.17.5
+//DEPS io.quarkus:quarkus-resteasy-multipart:3.17.5
+//DEPS org.seleniumhq.selenium:selenium-chrome-driver:4.13.0
+//DEPS io.github.bonigarcia:webdrivermanager:5.5.3
+//DEPS org.fusesource.jansi:jansi:2.4.0
 
 //FILES templates/edit.html=firestarter.html
 //Q:CONFIG quarkus.log.console.level=WARN
 //Q:CONFIG quarkus.banner.enabled=false
 
-import io.github.bonigarcia.wdm.WebDriverManager;
-import io.quarkus.qute.Template;
-import io.quarkus.qute.TemplateInstance;
-import io.quarkus.runtime.Quarkus;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
-import org.fusesource.jansi.Ansi;
-import org.jboss.resteasy.annotations.providers.multipart.MultipartForm;
-import org.openqa.selenium.PageLoadStrategy;
-import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.chrome.ChromeDriver;
-import org.openqa.selenium.chrome.ChromeOptions;
-import picocli.CommandLine;
-import static org.fusesource.jansi.Ansi.ansi;
-
-import javax.enterprise.context.ApplicationScoped;
-import javax.inject.Inject;
-import javax.ws.rs.*;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
@@ -43,6 +23,30 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
+
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.fusesource.jansi.Ansi;
+import org.jboss.resteasy.annotations.providers.multipart.MultipartForm;
+import org.openqa.selenium.PageLoadStrategy;
+import org.openqa.selenium.WebDriver;
+import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.chrome.ChromeOptions;
+
+import io.github.bonigarcia.wdm.WebDriverManager;
+import io.quarkus.qute.Template;
+import io.quarkus.qute.TemplateInstance;
+import io.quarkus.runtime.Quarkus;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.FormParam;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
+import picocli.CommandLine;
 
 @CommandLine.Command
 public class firestarter implements Runnable {
@@ -93,17 +97,19 @@ public class firestarter implements Runnable {
     }
 
     public static String youtubeFullscreenUrl(String url) {
-        if (url.toLowerCase().indexOf("youtube") != -1) {
+        if (url.toLowerCase().contains("youtube")) {
             try {
                 // Convert URL to embed-url that allows opening in fullscreen, with autoplay and without controls.
-                final String videoId = Arrays.asList(new URL(url).getQuery().split("&"))
-                        .stream()
+                final String videoId = Arrays.stream(new URL(url).getQuery().split("&"))
                         .map(parm -> parm.split("="))
                         .filter(kv -> kv[0].equals("v"))
                         .map(kv -> kv[1])
                         .findFirst()
                         .get();
-                return "https://www.youtube.com/embed/" + videoId + "?controls=0&autoplay=1";
+
+                String fsUrl = "https://www.youtube.com/embed/" + videoId + "?controls=0&autoplay=1";
+                System.out.println(">>>"  + fsUrl);
+                return fsUrl;
             } catch (Exception e) {
                 return url;
             }
@@ -206,7 +212,7 @@ public class firestarter implements Runnable {
                 WebDriverManager.chromedriver().setup();
             }
             ChromeOptions options = new ChromeOptions();
-            options.addArguments("--kiosk");
+            options.addArguments("--kiosk", "--autoplay-policy=no-user-gesture-required");
             options.setExperimentalOption("excludeSwitches", Collections.singletonList("enable-automation"));
             options.setExperimentalOption("useAutomationExtension", false);
 
@@ -233,8 +239,6 @@ public class firestarter implements Runnable {
             driver.manage().timeouts().implicitlyWait(1250, TimeUnit.MILLISECONDS);
             return driver;
         }
-
-
 
         public void init(boolean downloadWebdriver) throws Exception {
             driver = setupDriver(downloadWebdriver);
