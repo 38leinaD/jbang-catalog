@@ -12,6 +12,10 @@
     "httpserver": {
       "script-ref": "src/httpserver.java",
       "description": "Minimalist JDK-internal http-server"
+    },
+    "whisper": {
+      "script-ref": "src/WhisperTranscribe.java",
+      "description": "Voice-to-text via whisper.cpp: hold mic button to record, transcribes and pastes into focused field"
     }
   }
 }
