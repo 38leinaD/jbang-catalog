@@ -1,6 +1,6 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
 
-//JAVA 21
+//JAVA 21+
 
 import java.awt.*;
 import java.awt.datatransfer.*;
@@ -59,7 +59,7 @@ public class WhisperTranscribe {
             System.getProperty("user.home") + "/whisper.cpp/build/bin/whisper-cli");
     static final String WHISPER_MODEL = System.getProperty("whisper.model",
             System.getProperty("user.home") + "/whisper.cpp/models/ggml-base.en.bin");
-    static final String WHISPER_LANG = System.getProperty("whisper.lang", "en");
+    static final String WHISPER_LANG = System.getProperty("whisper.lang", "auto");
     static final String SHORTCUT_KEY = System.getProperty("whisper.shortcut", "F8");
 
     // Colors — Fluent-inspired dark theme
@@ -271,7 +271,7 @@ public class WhisperTranscribe {
             for (int i = 0; i < 3; i++) {
                 float alpha = 0.3f + 0.7f * (float)(0.5 + 0.5 * Math.sin(pulsePhase + i * 0.8));
                 g2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
-                g2.fillOval(cx - 8 + i * 8, cy - 2, 4, 4);
+                g2.fillOval(cx - 10 + i * 8, cy - 2, 4, 4);
             }
             g2.setComposite(AlphaComposite.SrcOver);
         }
@@ -385,14 +385,12 @@ public class WhisperTranscribe {
     // ── Whisper integration ────────────────────────────────────────
 
     private String runWhisper(Path wavFile) throws Exception {
-        ProcessBuilder pb = new ProcessBuilder(
-                WHISPER_CLI,
-                "--model", WHISPER_MODEL,
-                "--language", WHISPER_LANG,
-                "--no-prints",
-                "--no-timestamps",
-                wavFile.toString()
-        );
+        var cmd = new ArrayList<String>();
+        cmd.addAll(java.util.List.of(WHISPER_CLI, "--model", WHISPER_MODEL));
+        if (!"auto".equalsIgnoreCase(WHISPER_LANG))
+            cmd.addAll(java.util.List.of("--language", WHISPER_LANG));
+        cmd.addAll(java.util.List.of("--no-prints", "--no-timestamps", wavFile.toString()));
+        ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(true);
         Process proc = pb.start();
         String output;
