@@ -7,7 +7,11 @@ import java.awt.datatransfer.*;
 import java.awt.event.*;
 import java.awt.geom.*;
 import java.io.*;
+import java.net.URI;
+import java.net.http.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.regex.*;
 import javax.sound.sampled.*;
@@ -25,8 +29,9 @@ import javax.swing.Timer;
  *
  * Dependencies:
  *   - whisper.cpp   Build from https://github.com/ggerganov/whisper.cpp
- *                   Expects ~/whisper.cpp/build/bin/whisper-cli and a model in
+ *                   Expects ~/whisper.cpp/build/bin/whisper-server and a model in
  *                   ~/whisper.cpp/models/ (override paths via system properties below).
+ *                   If whisper-server is already running on whisper.port, it is used as-is.
  *   - wl-copy       Wayland clipboard tool (package: wl-clipboard).
  *   - ydotool       Kernel-level input simulation for auto-paste on Wayland.
  *                   Requires ydotoold running with a user-accessible socket.
@@ -46,20 +51,22 @@ import javax.swing.Timer;
  *
  * System properties:
  *   -Dwhisper.shortcut=F8   Global shortcut key (default: F8). Requires /dev/input access.
- *   -Dwhisper.cli=...       Path to whisper-cli binary.
+ *   -Dwhisper.server=...    Path to whisper-server binary.
  *   -Dwhisper.model=...     Path to whisper model file.
- *   -Dwhisper.lang=en       Language code.
+ *   -Dwhisper.lang=en       Language code (default: auto-detect).
+ *   -Dwhisper.port=8080     whisper-server port (default: 8080).
  *
  * Example:
- *   jbang -Dwhisper.lang=de -Dwhisper.model=/home/daniel/whisper.cpp/models/ggml-base.en.bin src/WhisperTranscribe.java
+ *   jbang -Dwhisper.lang=de -Dwhisper.model=/home/daniel/whisper.cpp/models/ggml-large-v3.bin src/WhisperTranscribe.java
  */
 public class WhisperTranscribe {
 
-    static final String WHISPER_CLI = System.getProperty("whisper.cli",
-            System.getProperty("user.home") + "/whisper.cpp/build/bin/whisper-cli");
+    static final String WHISPER_SERVER_BIN = System.getProperty("whisper.server",
+            System.getProperty("user.home") + "/whisper.cpp/build/bin/whisper-server");
     static final String WHISPER_MODEL = System.getProperty("whisper.model",
             System.getProperty("user.home") + "/whisper.cpp/models/ggml-base.en.bin");
     static final String WHISPER_LANG = System.getProperty("whisper.lang", "auto");
+    static final int    WHISPER_PORT = Integer.getInteger("whisper.port", 9898);
     static final String SHORTCUT_KEY = System.getProperty("whisper.shortcut", "F8");
 
     // Colors — Fluent-inspired dark theme
@@ -83,42 +90,27 @@ public class WhisperTranscribe {
     private float pulsePhase = 0f;
     private JWindow frame;
 
+    private Process serverProcess;
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5)).build();
+
     enum State { IDLE, RECORDING, TRANSCRIBING, DONE, ERROR }
     private State state = State.IDLE;
 
     public static void main(String[] args) {
         WhisperTranscribe app = new WhisperTranscribe();
         if (!app.checkDependencies()) System.exit(1);
+        if (!app.startWhisperServer()) System.exit(1);
         SwingUtilities.invokeLater(app::createUI);
     }
 
     private boolean checkDependencies() {
-        boolean ok = true;
-
-        // Mandatory: whisper-cli
-        if (!Files.isExecutable(Path.of(WHISPER_CLI))) {
-            System.err.println("ERROR: whisper-cli not found: " + WHISPER_CLI);
-            System.err.println("       Build from https://github.com/ggerganov/whisper.cpp");
-            System.err.println("       Or set -Dwhisper.cli=/path/to/whisper-cli");
-            ok = false;
-        }
-
-        // Mandatory: whisper model
-        if (!Files.isReadable(Path.of(WHISPER_MODEL))) {
-            System.err.println("ERROR: whisper model not found: " + WHISPER_MODEL);
-            System.err.println("       Download a model into ~/whisper.cpp/models/");
-            System.err.println("       Or set -Dwhisper.model=/path/to/model.bin");
-            ok = false;
-        }
-
         // Mandatory: wl-copy (Wayland clipboard)
         hasWlCopy = isCommandAvailable("wl-copy");
         if (!hasWlCopy) {
             System.err.println("ERROR: wl-copy not found. Install wl-clipboard package.");
-            ok = false;
+            return false;
         }
-
-        if (!ok) return false;
 
         // Optional: ydotool (auto-paste)
         hasYdotool = isCommandAvailable("ydotool");
@@ -127,6 +119,74 @@ public class WhisperTranscribe {
         }
 
         return true;
+    }
+
+    private boolean startWhisperServer() {
+        if (isServerReady()) {
+            System.out.println("  using existing whisper-server on port " + WHISPER_PORT);
+            return true;
+        }
+
+        if (!Files.isExecutable(Path.of(WHISPER_SERVER_BIN))) {
+            System.err.println("ERROR: whisper-server not found: " + WHISPER_SERVER_BIN);
+            System.err.println("       Build from https://github.com/ggerganov/whisper.cpp");
+            System.err.println("       Or set -Dwhisper.server=/path/to/whisper-server");
+            return false;
+        }
+        if (!Files.isReadable(Path.of(WHISPER_MODEL))) {
+            System.err.println("ERROR: whisper model not found: " + WHISPER_MODEL);
+            System.err.println("       Download a model into ~/whisper.cpp/models/");
+            System.err.println("       Or set -Dwhisper.model=/path/to/model.bin");
+            return false;
+        }
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                    WHISPER_SERVER_BIN,
+                    "--model", WHISPER_MODEL,
+                    "--port", String.valueOf(WHISPER_PORT),
+                    "--host", "127.0.0.1"
+            );
+            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+            pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+            serverProcess = pb.start();
+
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (serverProcess != null && serverProcess.isAlive()) serverProcess.destroy();
+            }));
+
+            System.out.print("  starting whisper-server (loading model)...");
+            System.out.flush();
+            for (int i = 0; i < 60; i++) {
+                Thread.sleep(500);
+                if (!serverProcess.isAlive()) {
+                    System.out.println(" FAILED (process exited with " + serverProcess.exitValue() + ")");
+                    return false;
+                }
+                if (isServerReady()) {
+                    System.out.println(" ready");
+                    return true;
+                }
+                if (i % 4 == 3) { System.out.print("."); System.out.flush(); }
+            }
+            System.out.println(" TIMEOUT");
+            return false;
+
+        } catch (Exception e) {
+            System.err.println("ERROR starting whisper-server: " + e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean isServerReady() {
+        try {
+            var req = HttpRequest.newBuilder()
+                    .uri(URI.create("http://127.0.0.1:" + WHISPER_PORT + "/health"))
+                    .timeout(Duration.ofSeconds(2))
+                    .GET().build();
+            var resp = httpClient.send(req, HttpResponse.BodyHandlers.discarding());
+            return resp.statusCode() == 200;
+        } catch (Exception e) { return false; }
     }
 
     private static boolean isCommandAvailable(String cmd) {
@@ -200,9 +260,10 @@ public class WhisperTranscribe {
         frame.setVisible(true);
 
         System.out.println("Whisper Transcribe ready.");
-        System.out.println("  whisper.cli:      " + WHISPER_CLI);
+        System.out.println("  whisper.server:   " + WHISPER_SERVER_BIN);
         System.out.println("  whisper.model:    " + WHISPER_MODEL);
         System.out.println("  whisper.lang:     " + WHISPER_LANG);
+        System.out.println("  whisper.port:     " + WHISPER_PORT);
         System.out.println("  whisper.shortcut: " + SHORTCUT_KEY);
 
         startGlobalShortcutListener();
@@ -344,9 +405,8 @@ public class WhisperTranscribe {
             try {
                 Path wavFile = Files.createTempFile("whisper_", ".wav");
                 writeWav(wavFile, audioData, new AudioFormat(16000, 16, 1, true, false));
-                String text = runWhisper(wavFile);
+                String text = runWhisper(wavFile).strip();
                 Files.deleteIfExists(wavFile);
-                text = text.strip();
 
                 if (text.isEmpty()) {
                     SwingUtilities.invokeLater(() -> {
@@ -358,10 +418,10 @@ public class WhisperTranscribe {
                     return;
                 }
 
-                final String result = text;
-                copyToClipboard(result);
+                copyToClipboard(text);
                 pasteViaYdotool();
 
+                final String result = text;
                 SwingUtilities.invokeLater(() -> {
                     state = State.DONE;
                     setStatus("✓ " + truncate(result, 35), SUCCESS);
@@ -382,25 +442,54 @@ public class WhisperTranscribe {
         }, "transcriber").start();
     }
 
-    // ── Whisper integration ────────────────────────────────────────
+    // ── Whisper integration (HTTP) ─────────────────────────────────
 
     private String runWhisper(Path wavFile) throws Exception {
-        var cmd = new ArrayList<String>();
-        cmd.addAll(java.util.List.of(WHISPER_CLI, "--model", WHISPER_MODEL));
-        if (!"auto".equalsIgnoreCase(WHISPER_LANG))
-            cmd.addAll(java.util.List.of("--language", WHISPER_LANG));
-        cmd.addAll(java.util.List.of("--no-prints", "--no-timestamps", wavFile.toString()));
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(true);
-        Process proc = pb.start();
-        String output;
-        try (var reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-            output = reader.lines().reduce("", (a, b) -> a + " " + b);
+        String boundary = "Boundary" + System.currentTimeMillis();
+        byte[] body = buildMultipart(boundary, wavFile);
+
+        var request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + WHISPER_PORT + "/inference"))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .timeout(Duration.ofSeconds(120))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .build();
+
+        var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200)
+            throw new RuntimeException("whisper-server " + response.statusCode() + ": " + response.body());
+        return response.body();
+    }
+
+    private byte[] buildMultipart(String boundary, Path wavFile) throws IOException {
+        byte[] fileBytes = Files.readAllBytes(wavFile);
+        var out = new ByteArrayOutputStream();
+
+        // audio file part
+        appendStr(out, "--" + boundary + "\r\n");
+        appendStr(out, "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n");
+        appendStr(out, "Content-Type: audio/wav\r\n\r\n");
+        out.write(fileBytes);
+        appendStr(out, "\r\n");
+
+        // response format: plain text (no timestamps, no JSON overhead)
+        appendStr(out, "--" + boundary + "\r\n");
+        appendStr(out, "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n");
+        appendStr(out, "text\r\n");
+
+        // language (omit for auto-detection)
+        if (!"auto".equalsIgnoreCase(WHISPER_LANG)) {
+            appendStr(out, "--" + boundary + "\r\n");
+            appendStr(out, "Content-Disposition: form-data; name=\"language\"\r\n\r\n");
+            appendStr(out, WHISPER_LANG + "\r\n");
         }
-        int exitCode = proc.waitFor();
-        if (exitCode != 0)
-            throw new RuntimeException("whisper-cli exit " + exitCode + ": " + output);
-        return output.strip();
+
+        appendStr(out, "--" + boundary + "--\r\n");
+        return out.toByteArray();
+    }
+
+    private static void appendStr(ByteArrayOutputStream out, String s) throws IOException {
+        out.write(s.getBytes(StandardCharsets.UTF_8));
     }
 
     private void writeWav(Path path, byte[] pcmData, AudioFormat format) throws IOException {
@@ -479,7 +568,6 @@ public class WhisperTranscribe {
         java.util.List<Path> result = new ArrayList<>();
         String content = Files.readString(Path.of("/proc/bus/input/devices"));
         for (String block : content.split("\n\n")) {
-            // Check if device has EV_KEY capability (bit 1)
             boolean hasKey = false;
             String eventId = null;
             for (String line : block.split("\n")) {
