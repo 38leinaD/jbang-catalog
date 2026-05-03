@@ -405,7 +405,7 @@ public class WhisperTranscribe {
             try {
                 Path wavFile = Files.createTempFile("whisper_", ".wav");
                 writeWav(wavFile, audioData, new AudioFormat(16000, 16, 1, true, false));
-                String text = runWhisper(wavFile).strip();
+                String text = postProcess(runWhisper(wavFile));
                 Files.deleteIfExists(wavFile);
 
                 if (text.isEmpty()) {
@@ -440,6 +440,17 @@ public class WhisperTranscribe {
                 });
             }
         }, "transcriber").start();
+    }
+
+    // ── Post-processing ────────────────────────────────────────────
+
+    // Collapses whisper's per-segment newlines into spaces, then turns spoken
+    // commands ("new line", "neue Zeile", ...) into actual line breaks.
+    private static String postProcess(String raw) {
+        String t = raw.replaceAll("\\s+", " ").strip();
+        t = t.replaceAll("(?i)\\s*[,.!?]?\\s*\\b(new\\s*paragraph|neuer\\s+absatz)\\b[,.!?]?\\s*", "\n\n");
+        t = t.replaceAll("(?i)\\s*[,.!?]?\\s*\\b(new\\s*line|line\\s*break|newline|neue\\s+zeile|zeilenumbruch)\\b[,.!?]?\\s*", "\n");
+        return t.strip();
     }
 
     // ── Whisper integration (HTTP) ─────────────────────────────────
@@ -477,12 +488,10 @@ public class WhisperTranscribe {
         appendStr(out, "Content-Disposition: form-data; name=\"response_format\"\r\n\r\n");
         appendStr(out, "text\r\n");
 
-        // language (omit for auto-detection)
-        if (!"auto".equalsIgnoreCase(WHISPER_LANG)) {
-            appendStr(out, "--" + boundary + "\r\n");
-            appendStr(out, "Content-Disposition: form-data; name=\"language\"\r\n\r\n");
-            appendStr(out, WHISPER_LANG + "\r\n");
-        }
+        // language: "auto" tells whisper-server to detect; omitting would default to "en"
+        appendStr(out, "--" + boundary + "\r\n");
+        appendStr(out, "Content-Disposition: form-data; name=\"language\"\r\n\r\n");
+        appendStr(out, WHISPER_LANG + "\r\n");
 
         appendStr(out, "--" + boundary + "--\r\n");
         return out.toByteArray();
@@ -621,6 +630,14 @@ public class WhisperTranscribe {
             case "F1" -> 59;  case "F2" -> 60;  case "F3" -> 61;  case "F4" -> 62;
             case "F5" -> 63;  case "F6" -> 64;  case "F7" -> 65;  case "F8" -> 66;
             case "F9" -> 67;  case "F10" -> 68; case "F11" -> 87; case "F12" -> 88;
+            case "PAUSE", "BREAK"   -> 119;
+            case "SCROLLLOCK"        -> 70;
+            case "INSERT"            -> 110;
+            case "HOME"              -> 102;
+            case "END"               -> 107;
+            case "PAGEUP"            -> 104;
+            case "PAGEDOWN"          -> 109;
+            case "PRINTSCREEN", "SYSRQ" -> 99;
             default -> -1;
         };
     }
