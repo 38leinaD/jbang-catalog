@@ -55,6 +55,10 @@ import javax.swing.Timer;
  *   -Dwhisper.model=...     Path to whisper model file.
  *   -Dwhisper.lang=en       Language code (default: auto-detect).
  *   -Dwhisper.port=8080     whisper-server port (default: 8080).
+ *   -Dwhisper.keywords=...  Path to a text file with one keyword per line; biases
+ *                           whisper toward those terms.
+ *                           Default: ~/.config/whisper-transcribe/keywords.txt
+ *                           Lines starting with '#' are treated as comments.
  *
  * Example:
  *   jbang -Dwhisper.lang=de -Dwhisper.model=/home/daniel/whisper.cpp/models/ggml-large-v3.bin src/WhisperTranscribe.java
@@ -68,6 +72,9 @@ public class WhisperTranscribe {
     static final String WHISPER_LANG = System.getProperty("whisper.lang", "auto");
     static final int    WHISPER_PORT = Integer.getInteger("whisper.port", 9898);
     static final String SHORTCUT_KEY = System.getProperty("whisper.shortcut", "F8");
+    static final String KEYWORDS_FILE = System.getProperty("whisper.keywords",
+            System.getProperty("user.home") + "/.config/whisper-transcribe/keywords.txt");
+    static String keywordsPrompt; // loaded at startup from KEYWORDS_FILE
 
     // Colors — Fluent-inspired dark theme
     static final Color BG = new Color(44, 44, 44);
@@ -100,8 +107,28 @@ public class WhisperTranscribe {
     public static void main(String[] args) {
         WhisperTranscribe app = new WhisperTranscribe();
         if (!app.checkDependencies()) System.exit(1);
+        loadKeywords();
         if (!app.startWhisperServer()) System.exit(1);
         SwingUtilities.invokeLater(app::createUI);
+    }
+
+    private static void loadKeywords() {
+        Path p = Path.of(KEYWORDS_FILE);
+        if (!Files.isReadable(p)) {
+            System.out.println("  keywords:         (no file at " + KEYWORDS_FILE + ")");
+            return;
+        }
+        try {
+            var lines = Files.readAllLines(p).stream()
+                    .map(String::strip)
+                    .filter(s -> !s.isEmpty() && !s.startsWith("#"))
+                    .toList();
+            if (lines.isEmpty()) return;
+            keywordsPrompt = String.join(", ", lines);
+            System.out.println("  keywords:         " + lines.size() + " loaded from " + KEYWORDS_FILE);
+        } catch (IOException e) {
+            System.err.println("Could not read keywords file: " + e.getMessage());
+        }
     }
 
     private boolean checkDependencies() {
@@ -405,7 +432,9 @@ public class WhisperTranscribe {
             try {
                 Path wavFile = Files.createTempFile("whisper_", ".wav");
                 writeWav(wavFile, audioData, new AudioFormat(16000, 16, 1, true, false));
-                String text = postProcess(runWhisper(wavFile));
+                String raw = runWhisper(wavFile);
+                String text = postProcess(raw);
+                System.out.println("Raw whisper response: " + raw.replace("\n", "\\n"));
                 Files.deleteIfExists(wavFile);
 
                 if (text.isEmpty()) {
@@ -447,7 +476,11 @@ public class WhisperTranscribe {
     // Collapses whisper's per-segment newlines into spaces, then turns spoken
     // commands ("new line", "neue Zeile", ...) into actual line breaks.
     private static String postProcess(String raw) {
-        String t = raw.replaceAll("\\s+", " ").strip();
+        // Whisper occasionally splits a word across two segments with no leading space
+        // on the second segment ("F\nische" → "Fische"). Drop those newlines without
+        // inserting a space; only "\n" followed by whitespace is a real segment break.
+        String t = raw.replaceAll("\\n(?!\\s)", "");
+        t = t.replaceAll("\\s+", " ").strip();
         t = t.replaceAll("(?i)\\s*[,.!?]?\\s*\\b(new\\s*paragraph|neuer\\s+absatz)\\b[,.!?]?\\s*", "\n\n");
         t = t.replaceAll("(?i)\\s*[,.!?]?\\s*\\b(new\\s*line|line\\s*break|newline|neue\\s+zeile|zeilenumbruch)\\b[,.!?]?\\s*", "\n");
         return t.strip();
@@ -492,6 +525,13 @@ public class WhisperTranscribe {
         appendStr(out, "--" + boundary + "\r\n");
         appendStr(out, "Content-Disposition: form-data; name=\"language\"\r\n\r\n");
         appendStr(out, WHISPER_LANG + "\r\n");
+
+        // initial prompt biases the decoder toward user-supplied keywords
+        if (keywordsPrompt != null && !keywordsPrompt.isEmpty()) {
+            appendStr(out, "--" + boundary + "\r\n");
+            appendStr(out, "Content-Disposition: form-data; name=\"prompt\"\r\n\r\n");
+            appendStr(out, keywordsPrompt + "\r\n");
+        }
 
         appendStr(out, "--" + boundary + "--\r\n");
         return out.toByteArray();
