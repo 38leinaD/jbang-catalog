@@ -33,6 +33,7 @@ import javax.swing.Timer;
  *                   ~/whisper.cpp/models/ (override paths via system properties below).
  *                   If whisper-server is already running on whisper.port, it is used as-is.
  *   - wl-copy       Wayland clipboard tool (package: wl-clipboard).
+ *                   On X11, xclip is used as a fallback.
  *   - ydotool       Kernel-level input simulation for auto-paste on Wayland.
  *                   Requires ydotoold running with a user-accessible socket.
  *                   See ydotoold setup notes below.
@@ -55,6 +56,7 @@ import javax.swing.Timer;
  *   -Dwhisper.model=...     Path to whisper model file.
  *   -Dwhisper.lang=en       Language code (default: auto-detect).
  *   -Dwhisper.port=8080     whisper-server port (default: 8080).
+ *   -Dwhisper.opacity=0.5   Window opacity 0.0-1.0 (default: 0.5). Requires a compositor.
  *   -Dwhisper.keywords=...  Path to a text file with one keyword per line; biases
  *                           whisper toward those terms.
  *                           Default: ~/.config/whisper-transcribe/keywords.txt
@@ -72,6 +74,7 @@ public class WhisperTranscribe {
     static final String WHISPER_LANG = System.getProperty("whisper.lang", "auto");
     static final int    WHISPER_PORT = Integer.getInteger("whisper.port", 9898);
     static final String SHORTCUT_KEY = System.getProperty("whisper.shortcut", "F8");
+    static final float  OPACITY = Float.parseFloat(System.getProperty("whisper.opacity", "0.5"));
     static final String KEYWORDS_FILE = System.getProperty("whisper.keywords",
             System.getProperty("user.home") + "/.config/whisper-transcribe/keywords.txt");
     static String keywordsPrompt; // loaded at startup from KEYWORDS_FILE
@@ -89,6 +92,7 @@ public class WhisperTranscribe {
     private volatile boolean recording = false;
     private boolean hasYdotool = false;
     private boolean hasWlCopy = false;
+    private boolean hasXclip = false;
     private TargetDataLine microphone;
     private ByteArrayOutputStream audioBuffer;
     private Thread recordThread;
@@ -132,10 +136,11 @@ public class WhisperTranscribe {
     }
 
     private boolean checkDependencies() {
-        // Mandatory: wl-copy (Wayland clipboard)
+        // Mandatory: a CLI clipboard tool. Prefer wl-copy on Wayland, fall back to xclip on X11.
         hasWlCopy = isCommandAvailable("wl-copy");
-        if (!hasWlCopy) {
-            System.err.println("ERROR: wl-copy not found. Install wl-clipboard package.");
+        hasXclip = isCommandAvailable("xclip");
+        if (!hasWlCopy && !hasXclip) {
+            System.err.println("ERROR: no clipboard tool found. Install wl-clipboard (Wayland) or xclip (X11).");
             return false;
         }
 
@@ -276,6 +281,13 @@ public class WhisperTranscribe {
         // Clip window to rounded shape (no alpha transparency needed — avoids flicker)
         int w = frame.getWidth(), h = frame.getHeight();
         frame.setShape(new RoundRectangle2D.Float(0, 0, w, h, 26, 26));
+
+        if (OPACITY < 1.0f) {
+            try { frame.setOpacity(Math.max(0.1f, Math.min(1.0f, OPACITY))); }
+            catch (UnsupportedOperationException e) {
+                System.err.println("Window translucency not supported: " + e.getMessage());
+            }
+        }
 
         // Position bottom-right
         Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
@@ -553,13 +565,22 @@ public class WhisperTranscribe {
     private void copyToClipboard(String text) {
         Toolkit.getDefaultToolkit().getSystemClipboard()
                 .setContents(new StringSelection(text), null);
-        if (hasWlCopy) {
-            try {
-                Process p = new ProcessBuilder("wl-copy", "--", text).start();
-                p.waitFor();
-            } catch (Exception e) {
-                System.err.println("wl-copy failed: " + e.getMessage());
+
+        // wl-copy reads from stdin via "--"; xclip reads from stdin and stays alive
+        // owning the selection. Pipe text in either way to avoid argv length limits.
+        ProcessBuilder pb = hasWlCopy
+                ? new ProcessBuilder("wl-copy")
+                : hasXclip ? new ProcessBuilder("xclip", "-selection", "clipboard") : null;
+        if (pb == null) return;
+        try {
+            Process p = pb.start();
+            try (var os = p.getOutputStream()) {
+                os.write(text.getBytes(StandardCharsets.UTF_8));
             }
+            // xclip forks and detaches to hold the selection; don't block on it
+            if (hasWlCopy) p.waitFor();
+        } catch (Exception e) {
+            System.err.println("clipboard copy failed: " + e.getMessage());
         }
     }
 
