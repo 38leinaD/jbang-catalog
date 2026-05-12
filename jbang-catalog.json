@@ -16,6 +16,10 @@
     "whisper": {
       "script-ref": "src/WhisperTranscribe.java",
       "description": "Voice-to-text via whisper.cpp: hold mic button to record, transcribes and pastes into focused field"
+    },
+    "tracker": {
+      "script-ref": "src/IssueTracker.java",
+      "description": "Single-file projects + issues tracker with voice comments via whisper, served over Tailscale. JSON-backed, no database."
     }
   }
 }
